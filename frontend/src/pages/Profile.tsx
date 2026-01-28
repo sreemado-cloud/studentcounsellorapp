@@ -25,6 +25,7 @@ export default function Profile() {
   const [major, setMajor] = useState(user?.major || '');
   const [bio, setBio] = useState(user?.bio || '');
 
+  const [saveError, setSaveError] = useState('');
   const [showChangePassword, setShowChangePassword] = useState(false);
   const [currentPassword, setCurrentPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
@@ -35,6 +36,7 @@ export default function Profile() {
 
   const handleSave = async () => {
     setIsSaving(true);
+    setSaveError('');
     try {
       await usersApi.updateProfile({
         full_name: fullName,
@@ -46,8 +48,10 @@ export default function Profile() {
       setIsEditing(false);
       setShowSuccess(true);
       setTimeout(() => setShowSuccess(false), 3000);
-    } catch (error) {
+    } catch (error: unknown) {
       console.error('Error updating profile:', error);
+      const axiosError = error as { response?: { data?: { detail?: string } } };
+      setSaveError(axiosError.response?.data?.detail || 'Failed to update profile. Please try again.');
     } finally {
       setIsSaving(false);
     }
@@ -98,6 +102,14 @@ export default function Profile() {
         </div>
       )}
 
+      {/* Error Message */}
+      {saveError && (
+        <div className="p-4 bg-red-50 border border-red-100 rounded-xl flex items-center gap-3 text-red-700">
+          <AlertCircle className="w-5 h-5" />
+          <p className="font-medium">{saveError}</p>
+        </div>
+      )}
+
       {/* Profile Card */}
       <div className="bg-white rounded-2xl border border-slate-100 overflow-hidden">
         {/* Banner */}
@@ -118,7 +130,14 @@ export default function Profile() {
               </div>
             </div>
             <button
-              onClick={() => (isEditing ? handleSave() : setIsEditing(true))}
+              onClick={() => {
+                if (isEditing) {
+                  handleSave();
+                } else {
+                  setSaveError('');
+                  setIsEditing(true);
+                }
+              }}
               disabled={isSaving}
               className="mt-4 sm:mt-0 inline-flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-indigo-500 to-purple-600 text-white font-medium rounded-xl shadow-lg shadow-indigo-500/30 hover:shadow-xl transition-all disabled:opacity-50"
             >
@@ -240,6 +259,7 @@ export default function Profile() {
                 <button
                   onClick={() => {
                     setIsEditing(false);
+                    setSaveError('');
                     setFullName(user?.full_name || '');
                     setPhone(user?.phone || '');
                     setGrade(user?.grade || '');
