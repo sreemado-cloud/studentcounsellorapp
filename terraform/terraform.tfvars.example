@@ -1,0 +1,29 @@
+# Copy this file to terraform.tfvars and customize
+
+aws_region = "us-east-1"
+environment = "production"
+cluster_name = "student-counsellor"
+
+kubernetes_version = "1.30"
+
+# VPC Configuration
+vpc_cidr = "10.0.0.0/16"
+availability_zones_count = 3
+
+# EKS Node Group Configuration
+node_instance_types = ["t3.medium"]
+node_desired_size = 2
+node_min_size = 2
+node_max_size = 5
+
+# Use single NAT gateway to reduce cost (less HA)
+single_nat_gateway = false
+
+# Grant cluster creator admin access
+enable_cluster_creator_admin = true
+
+# Additional tags
+tags = {
+  Project = "student-counsellor"
+  Team    = "platform"
+}

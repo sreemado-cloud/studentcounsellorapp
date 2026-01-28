@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-config
+  namespace: student-counsellor
+data:
+  DATABASE_NAME: "student_counsellor"
+  ACCESS_TOKEN_EXPIRE_MINUTES: "30"
+  VITE_API_URL: "/api"
+  # Allow all origins since ALB handles the routing
+  # In production with a custom domain, set this to your specific domain
+  ALLOWED_ORIGINS: "*"
+  # Multi-tenancy strategy: row_level (default), collection_per_tenant, database_per_tenant
+  TENANT_STRATEGY: "row_level"
+  # Debug mode (set to false in production)
+  DEBUG: "false"
