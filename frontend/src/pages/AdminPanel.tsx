@@ -9,8 +9,6 @@ import {
   Shield,
   GraduationCap,
   Briefcase,
-  Mail,
-  Phone,
   Calendar,
   X,
   Check,
@@ -77,7 +75,10 @@ export default function AdminPanel() {
 
   const fetchUsers = async () => {
     try {
-      const data = await institutionsApi.getUsers();
+      // Super admin: include inactive users and request more rows so no one is missed
+      const includeInactive = user?.is_super_admin === true;
+      const limit = includeInactive ? 300 : undefined;
+      const data = await institutionsApi.getUsers(undefined, includeInactive, limit);
       setUsers(data);
     } catch (error) {
       console.error('Failed to fetch users:', error);
@@ -127,8 +128,7 @@ export default function AdminPanel() {
         throw new Error(data.detail || 'Failed to create user');
       }
 
-      const createdUser = await response.json();
-      setUsers((prev) => [...prev, createdUser]);
+      await response.json();
       setSuccess(`${roleConfig[newUser.role].label} "${newUser.full_name}" created successfully!`);
       setNewUser({
         email: '',
@@ -137,11 +137,9 @@ export default function AdminPanel() {
         role: 'counsellor',
         phone: '',
       });
-      
-      setTimeout(() => {
-        setShowAddModal(false);
-        setSuccess('');
-      }, 2000);
+      setShowAddModal(false);
+      await fetchUsers();
+      setTimeout(() => setSuccess(''), 2000);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to create user');
     } finally {
@@ -174,19 +172,7 @@ export default function AdminPanel() {
       }
 
       const result = await response.json();
-      
-      // Update the student in the list
-      setUsers((prev) =>
-        prev.map((u) =>
-          u.id === selectedStudent.id
-            ? {
-                ...u,
-                assigned_counsellor_id: result.assigned_counsellor_id || undefined,
-                assigned_counsellor_name: result.assigned_counsellor_name || undefined,
-              }
-            : u
-        )
-      );
+      await fetchUsers();
 
       setSuccess(
         result.assigned_counsellor_id
@@ -248,11 +234,9 @@ export default function AdminPanel() {
       }
 
       const result = await response.json();
-      
-      // Remove user from current list (they're now in a different institution)
-      setUsers((prev) => prev.filter((u) => u.id !== selectedUser.id));
 
       setSuccess(`User reassigned to ${result.new_institution_name} successfully!`);
+      await fetchUsers();
 
       setTimeout(() => {
         setShowReassignModal(false);
@@ -494,7 +478,8 @@ export default function AdminPanel() {
                 <tr>
                   <th className="text-left py-4 px-6 text-sm font-semibold text-slate-600">User</th>
                   <th className="text-left py-4 px-6 text-sm font-semibold text-slate-600">Role</th>
-                  <th className="text-left py-4 px-6 text-sm font-semibold text-slate-600 hidden lg:table-cell">Assigned Counsellor / Institution</th>
+                  <th className="text-left py-4 px-6 text-sm font-semibold text-slate-600 hidden lg:table-cell">Institution</th>
+                  <th className="text-left py-4 px-6 text-sm font-semibold text-slate-600 hidden lg:table-cell">Assigned Counsellor</th>
                   <th className="text-left py-4 px-6 text-sm font-semibold text-slate-600 hidden lg:table-cell">Joined</th>
                   <th className="text-left py-4 px-6 text-sm font-semibold text-slate-600">Status</th>
                   <th className="text-left py-4 px-6 text-sm font-semibold text-slate-600">Actions</th>
@@ -532,6 +517,12 @@ export default function AdminPanel() {
                         </div>
                       </td>
                       <td className="py-4 px-6 hidden lg:table-cell">
+                        <div className="flex items-center gap-2">
+                          <Building2 className="w-3.5 h-3.5 text-slate-400" />
+                          <span className="text-sm text-slate-700">{u.institution_name ?? '—'}</span>
+                        </div>
+                      </td>
+                      <td className="py-4 px-6 hidden lg:table-cell">
                         {u.role === 'student' ? (
                           u.assigned_counsellor_name ? (
                             <div className="flex items-center gap-2">
@@ -539,13 +530,10 @@ export default function AdminPanel() {
                               <span className="text-sm text-slate-700">{u.assigned_counsellor_name}</span>
                             </div>
                           ) : (
-                            <span className="text-sm text-slate-400 italic">Not assigned</span>
+                            <span className="text-sm text-slate-400">—</span>
                           )
                         ) : (
-                          <div className="flex items-center gap-2">
-                            <Building2 className="w-3.5 h-3.5 text-slate-400" />
-                            <span className="text-sm text-slate-700">{u.institution_name || 'Unknown'}</span>
-                          </div>
+                          <span className="text-sm text-slate-400">—</span>
                         )}
                       </td>
                       <td className="py-4 px-6 hidden lg:table-cell">
@@ -614,7 +602,7 @@ export default function AdminPanel() {
                               {u.assigned_counsellor_id ? 'Reassign' : 'Assign'}
                             </button>
                           )}
-                          {user?.is_super_admin && (u.role === 'counsellor' || (u.role === 'student' && u.approval_status !== 'pending')) && (
+                          {user?.is_super_admin && (u.role === 'admin' || u.role === 'counsellor' || (u.role === 'student' && u.approval_status !== 'pending')) && (
                             <button
                               onClick={() => openReassignModal(u)}
                               className="flex items-center gap-1.5 px-3 py-1.5 text-sm bg-purple-100 text-purple-700 rounded-lg hover:bg-purple-200 transition-colors font-medium"
@@ -1122,9 +1110,9 @@ export default function AdminPanel() {
                 <p className="text-sm text-amber-800">
                   <strong>Warning:</strong> Reassigning a user to a different institution will move them to that institution's tenant. 
                   {selectedUser.role === 'student' && ' Any counsellor assignments will be cleared.'}
-                  {selectedUser.role === 'counsellor' && (
+                  {(selectedUser.role === 'counsellor' || selectedUser.role === 'admin') && (
                     <span className="block mt-1 font-semibold text-red-700">
-                      ⚠️ Only super admins can reassign counsellors between institutions.
+                      ⚠️ Only super admins can reassign admins or counsellors between institutions.
                     </span>
                   )}
                 </p>
@@ -1135,7 +1123,7 @@ export default function AdminPanel() {
                   Current Institution
                 </label>
                 <div className="p-3 bg-slate-50 rounded-xl">
-                  <p className="text-sm text-slate-700 font-medium">{selectedUser.institution_name || 'Unknown'}</p>
+                  <p className="text-sm text-slate-700 font-medium">{selectedUser.institution_name ?? '—'}</p>
                 </div>
               </div>
 

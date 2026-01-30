@@ -119,7 +119,7 @@ export default function CounsellorAppointments() {
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
           <h1 className="text-3xl font-bold text-slate-800">Appointments</h1>
-          <p className="text-slate-600 mt-1">Manage your counselling sessions</p>
+          <p className="text-slate-600 mt-1">Manage your counselling appointments</p>
         </div>
       </div>
 
@@ -261,7 +261,7 @@ export default function CounsellorAppointments() {
           <div className="bg-white rounded-2xl shadow-xl w-full max-w-lg">
             <div className="flex items-center justify-between p-6 border-b border-slate-100">
               <h2 className="text-xl font-semibold text-slate-800">
-                Session Notes
+                Appointment Notes
               </h2>
               <button
                 onClick={() => {
@@ -290,7 +290,7 @@ export default function CounsellorAppointments() {
                 onChange={(e) => setNotes(e.target.value)}
                 rows={6}
                 className="w-full px-4 py-3 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition-all resize-none"
-                placeholder="Add session notes, observations, or follow-up items..."
+                placeholder="Add appointment notes, observations, or follow-up items..."
               />
             </div>
             

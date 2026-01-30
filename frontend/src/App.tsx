@@ -17,6 +17,7 @@ import Profile from './pages/Profile';
 import Students from './pages/Students';
 import AdminPanel from './pages/AdminPanel';
 import SuperAdminPage from './pages/SuperAdminPage';
+import InstitutionsPage from './pages/InstitutionsPage';
 import type { UserRole } from './types';
 
 const queryClient = new QueryClient();
@@ -64,10 +65,8 @@ function SuperAdminRoute({ children }: { children: React.ReactNode }) {
     return <Navigate to="/login" replace />;
   }
 
-  if (!user.is_super_admin) {
-    return <Navigate to="/dashboard" replace />;
-  }
-
+  // Always render Layout + page. Pages show "Access denied" when !user.is_super_admin,
+  // so /institutions and /super-admin stay reachable instead of redirecting to /dashboard.
   return <Layout>{children}</Layout>;
 }
 
@@ -219,6 +218,16 @@ function AppRoutes() {
           <SuperAdminRoute>
             <SuperAdminPage />
           </SuperAdminRoute>
+        }
+      />
+
+      {/* Institution management: admins only (super admins get full UI, others see Access denied) */}
+      <Route
+        path="/institutions"
+        element={
+          <ProtectedRoute allowedRoles={['admin']}>
+            <InstitutionsPage />
+          </ProtectedRoute>
         }
       />
 

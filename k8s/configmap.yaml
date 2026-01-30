@@ -7,9 +7,9 @@ data:
   DATABASE_NAME: "student_counsellor"
   ACCESS_TOKEN_EXPIRE_MINUTES: "30"
   VITE_API_URL: "/api"
-  # Allow all origins since ALB handles the routing
-  # In production with a custom domain, set this to your specific domain
-  ALLOWED_ORIGINS: "*"
+  # C5: Set explicit origins in production (no *). Comma-separated list.
+  # Example: "https://app.example.com" or "https://app.example.com,https://admin.example.com"
+  ALLOWED_ORIGINS: "https://your-frontend-domain.example.com"
   # Multi-tenancy strategy: row_level (default), collection_per_tenant, database_per_tenant
   TENANT_STRATEGY: "row_level"
   # Debug mode (set to false in production)

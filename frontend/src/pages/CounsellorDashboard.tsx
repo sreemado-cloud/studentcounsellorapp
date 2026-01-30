@@ -144,7 +144,7 @@ export default function CounsellorDashboard() {
             </div>
             <div>
               <p className="text-2xl font-bold text-slate-800">{stats.totalAppointments}</p>
-              <p className="text-sm text-slate-500">Total Sessions</p>
+              <p className="text-sm text-slate-500">Total Appointments</p>
             </div>
           </div>
         </div>

@@ -10,6 +10,7 @@ from bson import ObjectId
 from app.core.database import get_database
 from app.core.tenant import get_tenant_dependency, TenantContext
 from app.core.tenant_strategy import TenantAwareRepository
+from app.core.validators import validate_object_id
 from app.core.audit import AuditLogger, AuditAction
 from app.models.note import NoteCreate, NoteResponse, NoteUpdate, NoteCategory
 from app.models.user import UserRole
@@ -154,10 +155,10 @@ async def get_note(
     database = await get_database()
     repo = TenantAwareRepository(database, "notes")
     
-    # Find note within institution and for this student
+    nid = validate_object_id(note_id, "note_id")
     note = await repo.find_one(
         tenant.institution_id,
-        {"_id": ObjectId(note_id), "student_id": tenant.user_id}
+        {"_id": nid, "student_id": tenant.user_id}
     )
     
     if not note:
@@ -249,18 +250,18 @@ async def delete_note(
     database = await get_database()
     repo = TenantAwareRepository(database, "notes")
     
-    # Verify ownership
+    nid = validate_object_id(note_id, "note_id")
     existing = await repo.find_one(
         tenant.institution_id,
-        {"_id": ObjectId(note_id), "student_id": tenant.user_id}
+        {"_id": nid, "student_id": tenant.user_id}
     )
-    
+
     if not existing:
         raise HTTPException(status_code=404, detail="Note not found")
-    
+
     await repo.delete_one(
         tenant.institution_id,
-        {"_id": ObjectId(note_id), "student_id": tenant.user_id}
+        {"_id": nid, "student_id": tenant.user_id}
     )
     
     # Audit log

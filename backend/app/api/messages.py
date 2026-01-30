@@ -7,8 +7,8 @@ from typing import List
 from datetime import datetime
 from bson import ObjectId
 
-from app.core.database import get_database
-from app.core.tenant import get_tenant_dependency, TenantContext
+from app.core.database import get_database, get_default_database
+from app.core.tenant import get_tenant_dependency, TenantContext, is_super_admin
 from app.core.tenant_strategy import TenantAwareRepository
 from app.core.audit import AuditLogger, AuditAction
 from app.models.message import MessageCreate, MessageResponse, ConversationResponse
@@ -31,12 +31,9 @@ async def verify_message_access(message_id: str, tenant: TenantContext, database
       * The student_id is assigned to them
     """
     repo = TenantAwareRepository(database, "messages")
-    
-    try:
-        msg = await repo.find_one(tenant.institution_id, {"_id": ObjectId(message_id)})
-    except:
-        raise HTTPException(status_code=404, detail="Message not found")
-    
+    mid = validate_object_id(message_id, "message_id")
+    msg = await repo.find_one(tenant.institution_id, {"_id": mid})
+
     if not msg:
         raise HTTPException(status_code=404, detail="Message not found")
     
@@ -292,6 +289,68 @@ async def get_conversations(
 ):
     """Get conversation summaries."""
     database = await get_database()
+    default_db = get_default_database()
+
+    # Super admin: platform-wide conversations (all messages)
+    if is_super_admin(tenant):
+        user_id_str = str(tenant.user_id)
+        pipeline = [
+            {"$sort": {"created_at": -1}},
+            {
+                "$addFields": {
+                    "sender_id_str": {"$toString": "$sender_id"},
+                    "recipient_id_str": {"$toString": "$recipient_id"},
+                }
+            },
+            {
+                "$group": {
+                    "_id": {
+                        "$cond": [
+                            {"$eq": ["$sender_id_str", user_id_str]},
+                            "$recipient_id_str",
+                            "$sender_id_str"
+                        ]
+                    },
+                    "last_message": {"$first": "$content"},
+                    "last_message_time": {"$first": "$created_at"},
+                    "unread_count": {
+                        "$sum": {
+                            "$cond": [
+                                {
+                                    "$and": [
+                                        {"$eq": ["$recipient_id_str", user_id_str]},
+                                        {"$eq": ["$is_read", False]}
+                                    ]
+                                },
+                                1,
+                                0
+                            ]
+                        }
+                    }
+                }
+            },
+            {"$limit": 100}
+        ]
+        conversations = []
+        async for conv in default_db.messages.aggregate(pipeline):
+            try:
+                participant_id = conv["_id"]
+                if not isinstance(participant_id, str):
+                    participant_id = str(participant_id)
+                participant = await default_db.users.find_one({"_id": ObjectId(participant_id)})
+                if participant:
+                    conversations.append(ConversationResponse(
+                        participant_id=participant_id,
+                        participant_name=participant["full_name"],
+                        participant_role=participant["role"],
+                        last_message=conv["last_message"][:100] + "..." if len(conv["last_message"]) > 100 else conv["last_message"],
+                        last_message_time=conv["last_message_time"],
+                        unread_count=conv["unread_count"]
+                    ))
+            except Exception:
+                continue
+        return conversations
+
     repo = TenantAwareRepository(database, "messages")
     
     # Build query based on role
@@ -308,9 +367,15 @@ async def get_conversations(
         # Counsellors can see conversations where:
         # 1. They are sender or recipient
         # 2. The student_id is in their assigned students list
+        # Handle assigned_counsellor_id as string or ObjectId
+        counsellor_id_conditions = [{"assigned_counsellor_id": tenant.user_id}]
+        try:
+            counsellor_id_conditions.append({"assigned_counsellor_id": ObjectId(tenant.user_id)})
+        except Exception:
+            pass
         assigned_students = await database.users.find({
             "institution_id": tenant.institution_id,
-            "assigned_counsellor_id": tenant.user_id,
+            "$or": counsellor_id_conditions,
             "role": "student",
             "is_active": True
         }).to_list(length=None)
@@ -344,16 +409,24 @@ async def get_conversations(
     collection = database[collection_name]
     
     # Aggregate to get unique conversations
+    # Use $toString to normalize ObjectId/string comparisons
+    user_id_str = str(tenant.user_id)
     pipeline = [
         {"$match": query},
         {"$sort": {"created_at": -1}},
         {
+            "$addFields": {
+                "sender_id_str": {"$toString": "$sender_id"},
+                "recipient_id_str": {"$toString": "$recipient_id"},
+            }
+        },
+        {
             "$group": {
                 "_id": {
                     "$cond": [
-                        {"$eq": ["$sender_id", tenant.user_id]},
-                        "$recipient_id",
-                        "$sender_id"
+                        {"$eq": ["$sender_id_str", user_id_str]},
+                        "$recipient_id_str",
+                        "$sender_id_str"
                     ]
                 },
                 "last_message": {"$first": "$content"},
@@ -363,7 +436,7 @@ async def get_conversations(
                         "$cond": [
                             {
                                 "$and": [
-                                    {"$eq": ["$recipient_id", tenant.user_id]},
+                                    {"$eq": ["$recipient_id_str", user_id_str]},
                                     {"$eq": ["$is_read", False]}
                                 ]
                             },
@@ -430,7 +503,7 @@ async def mark_as_read(
     
     await repo.update_one(
         tenant.institution_id,
-        {"_id": ObjectId(message_id), "recipient_id": tenant.user_id},
+        {"_id": msg["_id"], "recipient_id": tenant.user_id},
         {"$set": {"is_read": True, "read_at": datetime.utcnow()}}
     )
     

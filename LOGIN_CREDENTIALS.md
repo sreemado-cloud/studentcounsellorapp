@@ -1,6 +1,32 @@
 # Login URL and Credentials
 
-**If http://localhost:3000/login doesn’t work** → see **[START_APP.md](START_APP.md)** for how to start the app and fix it.
+## Get login working (backend already healthy)
+
+1. **Start frontend** (so http://localhost:3000 works):
+   ```powershell
+   .\run-frontend.ps1
+   ```
+   Or: `docker compose up -d frontend`
+
+2. **Seed the database** (if not done yet):
+   ```powershell
+   docker compose run --rm backend python -m app.seed_data
+   ```
+
+3. **Open** http://localhost:3000/login and log in with:
+   - **Email:** `admin@stateuniversity.edu`
+   - **Password:** `Admin123!`
+
+4. **If login still fails:** Open DevTools (F12) → Network → try login → check the `POST .../api/auth/login` request (status and response). Check backend logs: `docker compose logs backend --tail 50`.
+
+### Super admin login
+
+- **Email:** `super@adminsca.com` · **Password:** `SuperAdmin123!` (seeded by `app.seed_data`)
+- Set **`SUPER_ADMIN_EMAILS=super@adminsca.com`** in `backend/.env`, then restart backend: `docker compose restart backend`.
+- After login you are sent to **Super Admin** (`/super-admin`). If you land on the normal dashboard, `is_super_admin` is false — fix `SUPER_ADMIN_EMAILS` and ensure you use the seeded super admin email.
+- Reseed if needed: `docker compose run --rm backend python -m app.seed_data`.
+
+---
 
 ## Login URL
 
@@ -30,6 +56,11 @@ docker-compose exec backend python -m app.seed_data
 ## Test Credentials
 
 After seeding, you can use these credentials to login:
+
+### Super Admin (platform-wide; set `SUPER_ADMIN_EMAILS=super@adminsca.com` in backend/.env)
+| Email | Password |
+|-------|----------|
+| super@adminsca.com | SuperAdmin123! |
 
 ### Admin Users (Full Access)
 All admin accounts use password: **Admin123!**

@@ -1,7 +1,25 @@
-from pydantic import BaseModel, EmailStr, Field
-from typing import Optional
+import re
+from typing import Annotated, Optional
+
+from pydantic import BaseModel, EmailStr, Field, BeforeValidator
 from datetime import datetime
 from enum import Enum
+
+
+def _validate_email_permissive(v: str) -> str:
+    """Accept any user@domain.tld-style string for output (UserResponse). Allows .local, .example, etc."""
+    if not isinstance(v, str):
+        raise ValueError("Email must be a string")
+    v = v.strip()
+    if not v or "@" not in v:
+        raise ValueError("Invalid email format")
+    if not re.match(r"^[^\s@]+@[^\s@]+\.[^\s@]+$", v):
+        raise ValueError("Invalid email format")
+    return v
+
+
+# Use in output models (e.g. UserResponse) so .local / .example emails from DB don't fail validation.
+EmailStrPermissive = Annotated[str, BeforeValidator(_validate_email_permissive)]
 
 
 class UserRole(str, Enum):
@@ -33,7 +51,7 @@ class UserLogin(BaseModel):
 
 class UserResponse(BaseModel):
     id: str
-    email: EmailStr
+    email: EmailStrPermissive
     full_name: str
     role: UserRole
     institution_id: str

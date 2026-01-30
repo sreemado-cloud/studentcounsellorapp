@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { useState, useEffect } from 'react';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { GraduationCap, Mail, Lock, AlertCircle } from 'lucide-react';
 
@@ -7,24 +7,53 @@ export default function Login() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
+  const [sessionExpired, setSessionExpired] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const { login } = useAuth();
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
+
+  useEffect(() => {
+    if (searchParams.get('reason') === 'session_expired') {
+      setSessionExpired(true);
+      setSearchParams({}, { replace: true });
+    }
+  }, [searchParams, setSearchParams]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
+    setSessionExpired(false);
     setIsLoading(true);
 
     try {
-      const resetRequired = await login(email, password);
-      // Don't navigate if password reset is required - modal will handle it
-      if (!resetRequired) {
+      const { resetRequired, isSuperAdmin } = await login(email, password);
+      // Always navigate on success. If reset required, PasswordResetModal will show on dashboard.
+      if (resetRequired) {
         navigate('/dashboard');
+      } else {
+        navigate(isSuperAdmin ? '/super-admin' : '/dashboard');
       }
     } catch (err: unknown) {
-      const error = err as { response?: { data?: { detail?: string } } };
-      setError(error.response?.data?.detail || 'Login failed. Please try again.');
+      const ax = err as { response?: { status?: number; data?: { detail?: string | unknown[] } } };
+      const detail = ax.response?.data?.detail;
+      const status = ax.response?.status;
+      let message: string;
+      if (status === 401) {
+        message = typeof detail === 'string' ? detail : 'Incorrect email or password';
+      } else if (typeof detail === 'string') {
+        message = detail;
+      } else if (Array.isArray(detail) && detail.length > 0) {
+        message = (detail[0] as { msg?: string })?.msg ?? 'Validation error';
+      } else if (!ax.response) {
+        message = 'Cannot reach server. Is the backend running?';
+      } else {
+        message = status === 500
+          ? 'Server error during login. Check backend logs or try again.'
+          : 'Login failed. Please try again.';
+        if (status) message += ` (HTTP ${status})`;
+      }
+      setError(message);
     } finally {
       setIsLoading(false);
     }
@@ -44,6 +73,12 @@ export default function Login() {
 
         {/* Form */}
         <div className="bg-white rounded-2xl shadow-xl shadow-slate-200/50 p-8">
+          {sessionExpired && (
+            <div className="mb-6 p-4 bg-amber-50 border border-amber-100 rounded-xl flex items-center gap-3 text-amber-800">
+              <AlertCircle className="w-5 h-5 flex-shrink-0" />
+              <p className="text-sm">Your session expired. Please sign in again.</p>
+            </div>
+          )}
           {error && (
             <div className="mb-6 p-4 bg-red-50 border border-red-100 rounded-xl flex items-center gap-3 text-red-700">
               <AlertCircle className="w-5 h-5 flex-shrink-0" />
@@ -112,6 +147,9 @@ export default function Login() {
               >
                 Forgot your password?
               </Link>
+            </p>
+            <p className="text-xs text-slate-400 mt-4">
+              Super admin: <code className="bg-slate-100 px-1 rounded">super@adminsca.com</code> / <code className="bg-slate-100 px-1 rounded">SuperAdmin123!</code>
             </p>
           </div>
         </div>

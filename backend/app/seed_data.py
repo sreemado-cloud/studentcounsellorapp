@@ -15,6 +15,7 @@ SAMPLE_INSTITUTIONS = [
         "name": "State University",
         "domain": "stateuniversity.edu",
         "subscription_tier": "professional",
+        "tenant_isolation_level": "high",
         "settings": {
             "branding_color": "#1E40AF",
             "max_counsellors": 10,
@@ -26,6 +27,7 @@ SAMPLE_INSTITUTIONS = [
         "name": "City Community College",
         "domain": "citycollege.edu",
         "subscription_tier": "basic",
+        "tenant_isolation_level": "low",
         "settings": {
             "branding_color": "#059669",
             "max_counsellors": 5,
@@ -37,6 +39,7 @@ SAMPLE_INSTITUTIONS = [
         "name": "Tech High School",
         "domain": "techhigh.edu",
         "subscription_tier": "free",
+        "tenant_isolation_level": "high",
         "settings": {
             "branding_color": "#DC2626",
             "max_counsellors": 3,
@@ -122,6 +125,13 @@ SAMPLE_STUDENTS = {
     ]
 }
 
+# Super Admin (platform-wide). Add this email to SUPER_ADMIN_EMAILS in backend/.env.
+SAMPLE_SUPER_ADMIN = {
+    "email": "super@adminsca.com",
+    "full_name": "Super Admin",
+    "password": "SuperAdmin123!",
+}
+
 # Sample Admin per Institution
 SAMPLE_ADMINS = {
     "State University": {
@@ -187,6 +197,30 @@ async def seed_database():
         institution_ids[inst_data["name"]] = str(result.inserted_id)
         print(f"  Created: {inst_data['name']} (ID: {result.inserted_id})")
     
+    # Create super admin (assigned to first institution; add email to SUPER_ADMIN_EMAILS in backend/.env)
+    print("\n=== Creating Super Admin ===")
+    first_inst_id = next(iter(institution_ids.values()), None)
+    if first_inst_id:
+        existing = await database.users.find_one({"email": SAMPLE_SUPER_ADMIN["email"]})
+        if not existing:
+            super_admin = {
+                "email": SAMPLE_SUPER_ADMIN["email"],
+                "full_name": SAMPLE_SUPER_ADMIN["full_name"],
+                "password": hash_password(SAMPLE_SUPER_ADMIN["password"]),
+                "role": "admin",
+                "institution_id": first_inst_id,
+                "is_active": True,
+                "password_reset_required": False,
+                "created_at": datetime.utcnow(),
+                "profile_image": None,
+            }
+            await database.users.insert_one(super_admin)
+            print(f"  Created: {SAMPLE_SUPER_ADMIN['full_name']} ({SAMPLE_SUPER_ADMIN['email']})")
+        else:
+            print(f"  Super admin '{SAMPLE_SUPER_ADMIN['email']}' already exists, skipping...")
+    else:
+        print("  No institution found, skipping super admin.")
+
     # Create admins
     print("\n=== Creating Institution Admins ===")
     for inst_name, admin_data in SAMPLE_ADMINS.items():
@@ -289,6 +323,8 @@ async def seed_database():
         print(f"  - {name}: {id}")
     
     print("\nLogin credentials:")
+    print("\n  SUPER ADMIN (add this email to SUPER_ADMIN_EMAILS in backend/.env):")
+    print(f"    - {SAMPLE_SUPER_ADMIN['email']} / {SAMPLE_SUPER_ADMIN['password']}")
     print("\n  ADMINS (all use password: Admin123!):")
     for inst_name, admin in SAMPLE_ADMINS.items():
         print(f"    - {admin['email']} ({inst_name})")

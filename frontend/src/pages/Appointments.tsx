@@ -21,16 +21,43 @@ export default function Appointments() {
   // Form state
   const [selectedCounsellor, setSelectedCounsellor] = useState('');
   const [appointmentDate, setAppointmentDate] = useState('');
-  const [appointmentTime, setAppointmentTime] = useState('');
   const [appointmentType, setAppointmentType] = useState('academic');
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState('');
+  const [availableSlots, setAvailableSlots] = useState<{ start: string; end: string }[]>([]);
+  const [loadingSlots, setLoadingSlots] = useState(false);
+  const [selectedSlot, setSelectedSlot] = useState<{ start: string; end: string } | null>(null);
 
   useEffect(() => {
     fetchData();
   }, []);
+
+  useEffect(() => {
+    if (!selectedCounsellor || !appointmentDate) {
+      setAvailableSlots([]);
+      setSelectedSlot(null);
+      return;
+    }
+    let cancelled = false;
+    setLoadingSlots(true);
+    setSelectedSlot(null);
+    appointmentsApi
+      .getAvailability(selectedCounsellor, appointmentDate)
+      .then((res) => {
+        if (!cancelled) setAvailableSlots(res.available_slots || []);
+      })
+      .catch(() => {
+        if (!cancelled) setAvailableSlots([]);
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingSlots(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedCounsellor, appointmentDate]);
 
   const fetchData = async () => {
     try {
@@ -52,11 +79,15 @@ export default function Appointments() {
     setError('');
     setIsSubmitting(true);
 
+    if (!selectedSlot) {
+      setError('Please select an available time slot.');
+      setIsSubmitting(false);
+      return;
+    }
     try {
-      const dateTime = new Date(`${appointmentDate}T${appointmentTime}`);
       await appointmentsApi.create({
         counsellor_id: selectedCounsellor,
-        date: dateTime.toISOString(),
+        date: selectedSlot.start,
         duration_minutes: 30,
         appointment_type: appointmentType,
         title,
@@ -87,10 +118,11 @@ export default function Appointments() {
   const resetForm = () => {
     setSelectedCounsellor('');
     setAppointmentDate('');
-    setAppointmentTime('');
     setAppointmentType('academic');
     setTitle('');
     setDescription('');
+    setAvailableSlots([]);
+    setSelectedSlot(null);
   };
 
   const getStatusColor = (status: string) => {
@@ -142,7 +174,7 @@ export default function Appointments() {
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold text-slate-800">Appointments</h1>
-          <p className="text-slate-500">Manage your counselling sessions</p>
+          <p className="text-slate-500">Manage your counselling appointments</p>
         </div>
         <button
           onClick={() => setShowModal(true)}
@@ -283,33 +315,55 @@ export default function Appointments() {
                 </select>
               </div>
 
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-sm font-medium text-slate-700 mb-2">
-                    Date
-                  </label>
-                  <input
-                    type="date"
-                    value={appointmentDate}
-                    onChange={(e) => setAppointmentDate(e.target.value)}
-                    min={new Date().toISOString().split('T')[0]}
-                    className="w-full px-4 py-3 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
-                    required
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-slate-700 mb-2">
-                    Time
-                  </label>
-                  <input
-                    type="time"
-                    value={appointmentTime}
-                    onChange={(e) => setAppointmentTime(e.target.value)}
-                    className="w-full px-4 py-3 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
-                    required
-                  />
-                </div>
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-2">
+                  Date
+                </label>
+                <input
+                  type="date"
+                  value={appointmentDate}
+                  onChange={(e) => setAppointmentDate(e.target.value)}
+                  min={new Date().toISOString().split('T')[0]}
+                  className="w-full px-4 py-3 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+                  required
+                />
               </div>
+
+              {selectedCounsellor && appointmentDate && (
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-2">
+                    Available slots (30 min)
+                  </label>
+                  {loadingSlots ? (
+                    <div className="flex items-center gap-2 text-slate-500 py-4">
+                      <div className="w-5 h-5 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin" />
+                      Loading open slots…
+                    </div>
+                  ) : availableSlots.length === 0 ? (
+                    <p className="text-slate-500 py-4">No open slots for this counsellor on this day.</p>
+                  ) : (
+                    <div className="flex flex-wrap gap-2">
+                      {availableSlots.map((slot) => (
+                        <button
+                          key={slot.start}
+                          type="button"
+                          onClick={() => {
+                            setSelectedSlot(slot);
+                            setError('');
+                          }}
+                          className={`px-4 py-2 rounded-xl text-sm font-medium transition-all ${
+                            selectedSlot?.start === slot.start
+                              ? 'bg-indigo-600 text-white ring-2 ring-indigo-300'
+                              : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+                          }`}
+                        >
+                          {format(new Date(slot.start), 'h:mm a')}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
 
               <div>
                 <label className="block text-sm font-medium text-slate-700 mb-2">
@@ -365,7 +419,11 @@ export default function Appointments() {
                 </button>
                 <button
                   type="submit"
-                  disabled={isSubmitting}
+                  disabled={
+                    isSubmitting ||
+                    loadingSlots ||
+                    (!!selectedCounsellor && !!appointmentDate && availableSlots.length > 0 && !selectedSlot)
+                  }
                   className="flex-1 px-4 py-3 bg-gradient-to-r from-indigo-500 to-purple-600 text-white font-medium rounded-xl shadow-lg shadow-indigo-500/30 hover:shadow-xl transition-all disabled:opacity-50"
                 >
                   {isSubmitting ? 'Booking...' : 'Book Appointment'}

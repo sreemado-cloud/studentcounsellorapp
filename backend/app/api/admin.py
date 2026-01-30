@@ -7,8 +7,10 @@ from datetime import datetime
 from bson import ObjectId
 from typing import Optional
 
-from app.core.database import get_database
+from app.core.database import get_database, get_default_database
 from app.core.security import get_password_hash
+from app.core.validators import validate_object_id
+from app.core.token_revocation import delete_sessions_for_user
 from app.core.tenant import get_tenant_dependency, require_institution_admin, TenantContext, is_super_admin, is_email_super_admin
 from app.core.audit import AuditLogger, AuditAction
 from app.core.config import settings
@@ -37,6 +39,11 @@ class ReassignInstitutionRequest(BaseModel):
     new_institution_id: str
 
 
+class AssignCounsellorRequest(BaseModel):
+    """Schema for assigning a student to a counsellor"""
+    counsellor_id: Optional[str] = None  # None to unassign
+
+
 class SetPasswordRequest(BaseModel):
     """Schema for admin setting a user's password"""
     new_password: str = Field(..., min_length=8)
@@ -54,13 +61,11 @@ async def set_user_password(
     User must be in the admin's institution.
     """
     database = await get_database()
-    try:
-        user = await database.users.find_one({
-            "_id": ObjectId(user_id),
-            "institution_id": tenant.institution_id,
-        })
-    except Exception:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid user ID")
+    uid = validate_object_id(user_id, "user_id")
+    user = await database.users.find_one({
+        "_id": uid,
+        "institution_id": tenant.institution_id,
+    })
 
     if not user:
         raise HTTPException(
@@ -69,7 +74,7 @@ async def set_user_password(
         )
 
     await database.users.update_one(
-        {"_id": ObjectId(user_id)},
+        {"_id": uid},
         {
             "$set": {
                 "password": get_password_hash(body.new_password),
@@ -78,6 +83,8 @@ async def set_user_password(
             }
         },
     )
+
+    await delete_sessions_for_user(user_id)
 
     await AuditLogger.log_action(
         institution_id=tenant.institution_id,
@@ -105,8 +112,8 @@ async def create_user(
     database = await get_database()
     
     # Automatically assign to the admin's institution (security: ignore frontend value)
-    # This ensures users are always created in the admin's institution
-    institution_id = tenant.institution_id
+    # This ensures users are always created in the admin's institution (store as string)
+    institution_id = str(tenant.institution_id) if tenant.institution_id and tenant.institution_id != "default" else tenant.institution_id
     
     # Check if email already exists
     existing_user = await database.users.find_one({"email": user_data.email})
@@ -145,22 +152,17 @@ async def create_user(
         
         # Validate assigned counsellor if provided
         if user_data.assigned_counsellor_id:
-            try:
-                counsellor = await database.users.find_one({
-                    "_id": ObjectId(user_data.assigned_counsellor_id),
-                    "institution_id": institution_id,
-                    "role": "counsellor",
-                    "is_active": True
-                })
-                if not counsellor:
-                    raise HTTPException(
-                        status_code=status.HTTP_400_BAD_REQUEST,
-                        detail="Assigned counsellor not found or not in your institution"
-                    )
-            except:
+            cid = validate_object_id(user_data.assigned_counsellor_id, "assigned_counsellor_id")
+            counsellor = await database.users.find_one({
+                "_id": cid,
+                "institution_id": institution_id,
+                "role": "counsellor",
+                "is_active": True
+            })
+            if not counsellor:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="Invalid counsellor ID"
+                    detail="Assigned counsellor not found or not in your institution"
                 )
     elif user_data.role == "counsellor":
         max_counsellors = settings.get("max_counsellors", 5)
@@ -216,7 +218,7 @@ async def create_user(
     assigned_counsellor_name = None
     if user_dict.get("assigned_counsellor_id"):
         counsellor = await database.users.find_one({
-            "_id": ObjectId(user_dict["assigned_counsellor_id"])
+            "_id": validate_object_id(user_dict["assigned_counsellor_id"], "assigned_counsellor_id")
         })
         if counsellor:
             assigned_counsellor_name = counsellor.get("full_name")
@@ -254,24 +256,18 @@ async def update_user_status(
     """
     database = await get_database()
     
-    # Find user and verify they're in the same institution
-    try:
-        user = await database.users.find_one({
-            "_id": ObjectId(user_id),
-            "institution_id": tenant.institution_id
-        })
-    except:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid user ID"
-        )
-    
+    uid = validate_object_id(user_id, "user_id")
+    user = await database.users.find_one({
+        "_id": uid,
+        "institution_id": tenant.institution_id
+    })
+
     if not user:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="User not found in your institution"
         )
-    
+
     # Prevent admin from deactivating themselves
     if user_id == tenant.user_id and not is_active:
         raise HTTPException(
@@ -292,13 +288,14 @@ async def update_user_status(
             detail="Super admin accounts cannot be disabled."
         )
     
-    # Update user status
     await database.users.update_one(
-        {"_id": ObjectId(user_id)},
+        {"_id": uid},
         {"$set": {"is_active": is_active, "updated_at": datetime.utcnow()}}
     )
-    
-    # Audit log
+
+    if not is_active:
+        await delete_sessions_for_user(user_id)
+
     await AuditLogger.log_action(
         institution_id=tenant.institution_id,
         user_id=tenant.user_id,
@@ -311,96 +308,82 @@ async def update_user_status(
             "target_user_email": user["email"]
         }
     )
-    
+
     return {"message": f"User {'activated' if is_active else 'deactivated'} successfully"}
 
 
 @router.put("/users/{student_id}/assign-counsellor")
 async def assign_student_to_counsellor(
     student_id: str,
-    counsellor_id: Optional[str] = None,  # None to unassign
+    body: AssignCounsellorRequest,
     request: Request = None,
     tenant: TenantContext = Depends(require_institution_admin())
 ):
     """
     Assign or reassign a student to a counsellor within the admin's institution.
-    Pass counsellor_id=None to unassign the student.
+    Send {"counsellor_id": "..."} in JSON body; omit or null to unassign.
     """
     database = await get_database()
-    
-    # Find student and verify they're in the same institution
-    try:
-        student = await database.users.find_one({
-            "_id": ObjectId(student_id),
-            "institution_id": tenant.institution_id,
-            "role": "student"
-        })
-    except:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid student ID"
-        )
-    
+    counsellor_id = body.counsellor_id
+
+    sid = validate_object_id(student_id, "student_id")
+    student = await database.users.find_one({
+        "_id": sid,
+        "institution_id": tenant.institution_id,
+        "role": "student"
+    })
+
     if not student:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Student not found in your institution"
         )
     
+    previous_counsellor_id = student.get("assigned_counsellor_id")
+    prev_cid_str = str(previous_counsellor_id) if previous_counsellor_id else None
+
     # Validate counsellor if provided
     counsellor_name = None
     if counsellor_id:
-        try:
-            counsellor = await database.users.find_one({
-                "_id": ObjectId(counsellor_id),
-                "institution_id": tenant.institution_id,
-                "role": "counsellor",
-                "is_active": True
-            })
-            if not counsellor:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="Counsellor not found or not in your institution"
-                )
-            counsellor_name = counsellor.get("full_name")
-            
-            # Check max students per counsellor (max 10)
-            MAX_STUDENTS_PER_COUNSELLOR = 10
-            current_student_count = await database.users.count_documents({
-                "institution_id": tenant.institution_id,
-                "assigned_counsellor_id": counsellor_id,
-                "role": "student",
-                "is_active": True
-            })
-            
-            # If reassigning to a different counsellor, don't count the current student
-            if student.get("assigned_counsellor_id") == counsellor_id:
-                # Already assigned to this counsellor, no change needed
-                pass
-            elif current_student_count >= MAX_STUDENTS_PER_COUNSELLOR:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail=f"Counsellor has reached maximum capacity ({MAX_STUDENTS_PER_COUNSELLOR} students). Please assign this student to another counsellor."
-                )
-        except HTTPException:
-            raise
-        except:
+        cid = validate_object_id(counsellor_id, "counsellor_id")
+        counsellor = await database.users.find_one({
+            "_id": cid,
+            "institution_id": tenant.institution_id,
+            "role": "counsellor",
+            "is_active": True
+        })
+        if not counsellor:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Invalid counsellor ID"
+                detail="Counsellor not found or not in your institution"
             )
-    
-    # Track previous counsellor for history preservation
-    previous_counsellor_id = student.get("assigned_counsellor_id")
-    
-    # Update student assignment
+        counsellor_name = counsellor.get("full_name")
+
+        # Check max students per counsellor (max 10)
+        MAX_STUDENTS_PER_COUNSELLOR = 10
+        # Match both str and ObjectId (existing docs may use either)
+        q = {
+            "institution_id": tenant.institution_id,
+            "role": "student",
+            "is_active": True,
+            "$or": [
+                {"assigned_counsellor_id": counsellor_id},
+                {"assigned_counsellor_id": cid},
+            ],
+        }
+        current_student_count = await database.users.count_documents(q)
+        if prev_cid_str != counsellor_id and current_student_count >= MAX_STUDENTS_PER_COUNSELLOR:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Counsellor has reached maximum capacity ({MAX_STUDENTS_PER_COUNSELLOR} students). Please assign this student to another counsellor."
+            )
+
     update_data = {
         "assigned_counsellor_id": counsellor_id,
         "updated_at": datetime.utcnow()
     }
     
-    # Track assignment history for conversation history preservation
-    if previous_counsellor_id and previous_counsellor_id != counsellor_id:
+    if previous_counsellor_id and prev_cid_str != counsellor_id:
         # Add to assignment history
         assignment_history = student.get("counsellor_assignment_history", [])
         assignment_history.append({
@@ -416,13 +399,13 @@ async def assign_student_to_counsellor(
         update_data["counsellor_assigned_at"] = datetime.utcnow()
     
     await database.users.update_one(
-        {"_id": ObjectId(student_id)},
+        {"_id": sid},
         {"$set": update_data}
     )
-    
+
     # Update all messages to mark previous counsellor for masking
     # This ensures new counsellor can see full history but previous counsellor names are masked
-    if previous_counsellor_id and previous_counsellor_id != counsellor_id:
+    if previous_counsellor_id and prev_cid_str != counsellor_id:
         from app.core.tenant_strategy import TenantAwareRepository
         repo = TenantAwareRepository(database, "messages")
         
@@ -473,49 +456,42 @@ async def reassign_user_institution(
     tenant: TenantContext = Depends(require_institution_admin())
 ):
     """
-    Reassign a user (counsellor or student) to a different institution.
+    Reassign a user (admin, counsellor, or student) to a different institution.
     Note: This should be used carefully as it moves the user to a different tenant.
     """
     database = await get_database()
-    
-    # Find user and verify they're in the admin's institution
-    try:
-        user = await database.users.find_one({
-            "_id": ObjectId(user_id),
-            "institution_id": tenant.institution_id
-        })
-    except:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid user ID"
-        )
-    
+    default_db = get_default_database()
+
+    uid = validate_object_id(user_id, "user_id")
+    user = await database.users.find_one({
+        "_id": uid,
+        "institution_id": tenant.institution_id
+    })
+    # Super admin can reassign users with no institution (they appear in the merged list)
+    if not user and is_super_admin(tenant):
+        user = await default_db.users.find_one({"_id": uid})
+        if user and user.get("institution_id") not in (None, ""):
+            user = None  # They have an institution but not ours - don't allow
     if not user:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="User not found in your institution"
         )
-    
-    # Restrict counsellor reassignment to super admins only
-    if user["role"] == "counsellor" and not is_super_admin(tenant):
+
+    # Restrict counsellor and admin reassignment to super admins only
+    if user["role"] in ("counsellor", "admin") and not is_super_admin(tenant):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only super admins can reassign counsellors between institutions. Regular institution admins can only reassign students."
+            detail="Only super admins can reassign admins or counsellors between institutions. Regular institution admins can only reassign students."
         )
     
-    # Verify new institution exists
     new_institution_id = request_data.new_institution_id
-    try:
-        new_institution = await database.institutions.find_one({
-            "_id": ObjectId(new_institution_id),
-            "is_active": True
-        })
-    except:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid new institution ID"
-        )
-    
+    new_inst_oid = validate_object_id(new_institution_id, "new_institution_id")
+    new_institution = await database.institutions.find_one({
+        "_id": new_inst_oid,
+        "is_active": True
+    })
+
     if not new_institution:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -557,12 +533,14 @@ async def reassign_user_institution(
     
     if user["role"] == "student":
         update_data["assigned_counsellor_id"] = None  # Unassign when moving institutions
-    
-    await database.users.update_one(
-        {"_id": ObjectId(user_id)},
+
+    # Update in the DB where the user lives (default_db if they had no institution)
+    update_db = default_db if user.get("institution_id") in (None, "") else database
+    await update_db.users.update_one(
+        {"_id": uid},
         {"$set": update_data}
     )
-    
+
     # Audit log
     await AuditLogger.log_action(
         institution_id=tenant.institution_id,
@@ -598,34 +576,28 @@ async def approve_student(
     """
     database = await get_database()
     
-    # Find user and verify they're in the same institution
-    try:
-        user = await database.users.find_one({
-            "_id": ObjectId(user_id),
-            "institution_id": tenant.institution_id,
-            "role": "student"
-        })
-    except:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid user ID"
-        )
-    
+    uid = validate_object_id(user_id, "user_id")
+    user = await database.users.find_one({
+        "_id": uid,
+        "institution_id": tenant.institution_id,
+        "role": "student"
+    })
+
     if not user:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Student not found in your institution"
         )
-    
+
     if user.get("approval_status") != "pending":
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Student is not pending approval. Current status: {user.get('approval_status', 'unknown')}"
         )
-    
+
     # Update user: approve and activate
     await database.users.update_one(
-        {"_id": ObjectId(user_id)},
+        {"_id": uid},
         {
             "$set": {
                 "is_active": True,
@@ -726,34 +698,28 @@ async def reject_student(
     """
     database = await get_database()
     
-    # Find user and verify they're in the same institution
-    try:
-        user = await database.users.find_one({
-            "_id": ObjectId(user_id),
-            "institution_id": tenant.institution_id,
-            "role": "student"
-        })
-    except:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid user ID"
-        )
-    
+    uid = validate_object_id(user_id, "user_id")
+    user = await database.users.find_one({
+        "_id": uid,
+        "institution_id": tenant.institution_id,
+        "role": "student"
+    })
+
     if not user:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Student not found in your institution"
         )
-    
+
     if user.get("approval_status") != "pending":
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Student is not pending approval. Current status: {user.get('approval_status', 'unknown')}"
         )
-    
+
     # Update user: reject and keep inactive
     await database.users.update_one(
-        {"_id": ObjectId(user_id)},
+        {"_id": uid},
         {
             "$set": {
                 "is_active": False,

@@ -3,7 +3,7 @@ Institution model for multi-tenant architecture.
 An institution (school/university) is the top-level tenant.
 """
 from pydantic import BaseModel, Field
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 from datetime import datetime
 from enum import Enum
 
@@ -13,6 +13,12 @@ class SubscriptionTier(str, Enum):
     BASIC = "basic"
     PROFESSIONAL = "professional"
     ENTERPRISE = "enterprise"
+
+
+class TenantIsolationLevel(str, Enum):
+    """SaaS isolation: high = dedicated resources (DB/instances); low = shared."""
+    HIGH = "high"
+    LOW = "low"
 
 
 class InstitutionSettings(BaseModel):
@@ -33,6 +39,7 @@ class InstitutionBase(BaseModel):
 
 class InstitutionCreate(InstitutionBase):
     settings: Optional[InstitutionSettings] = None
+    tenant_isolation_level: TenantIsolationLevel = TenantIsolationLevel.HIGH
 
 
 class InstitutionUpdate(BaseModel):
@@ -63,3 +70,17 @@ class InstitutionStats(BaseModel):
     total_appointments: int = 0
     total_messages: int = 0
     active_users_30d: int = 0
+
+
+class PlatformInstitutionItem(BaseModel):
+    """Minimal institution info for platform (super admin) listing"""
+    id: str
+    name: str
+    is_active: bool = True
+    tenant_isolation_level: str = "high"
+
+
+class PlatformInstitutionSummary(BaseModel):
+    """Platform-wide institution count and list (super admin only)"""
+    count: int
+    institutions: List[PlatformInstitutionItem]

@@ -25,9 +25,12 @@ api.interceptors.response.use(
   (response) => response,
   (error) => {
     if (error.response?.status === 401) {
-      localStorage.removeItem('token');
-      localStorage.removeItem('user');
-      window.location.href = '/login';
+      const isLogin = error.config?.url?.includes('/auth/login') ?? false;
+      if (!isLogin) {
+        localStorage.removeItem('token');
+        localStorage.removeItem('user');
+        window.location.href = '/login?reason=session_expired';
+      }
     }
     return Promise.reject(error);
   }
@@ -61,11 +64,42 @@ export const institutionsApi = {
     return response.data;
   },
 
-  getUsers: async (role?: string, includeInactive?: boolean): Promise<User[]> => {
-    const params: Record<string, string | boolean> = {};
+  getUsers: async (role?: string, includeInactive?: boolean, limit?: number): Promise<User[]> => {
+    const params: Record<string, string | boolean | number> = {};
     if (role) params.role = role;
     if (includeInactive) params.include_inactive = true;
+    if (limit != null && limit > 0) params.limit = limit;
     const response = await api.get('/institutions/current/users', { params });
+    return response.data;
+  },
+
+  /** Students for My Students page. Counsellors: assigned only; admins: all in institution. */
+  getAssignedStudents: async (): Promise<User[]> => {
+    const response = await api.get('/institutions/current/assigned-students');
+    return response.data;
+  },
+
+  /** Platform-wide institution count and list (super admin only). */
+  getPlatformSummary: async (): Promise<{
+    count: number;
+    institutions: { id: string; name: string; is_active: boolean; tenant_isolation_level: string }[];
+  }> => {
+    const response = await api.get('/institutions/platform/summary');
+    return response.data;
+  },
+
+  /** Create institution (super admin only). */
+  createInstitution: async (data: {
+    name: string;
+    domain?: string;
+    tenant_isolation_level: 'high' | 'low';
+  }): Promise<Institution> => {
+    const body: { name: string; domain?: string; tenant_isolation_level: 'high' | 'low' } = {
+      name: data.name,
+      tenant_isolation_level: data.tenant_isolation_level,
+    };
+    if (data.domain?.trim()) body.domain = data.domain.trim();
+    const response = await api.post('/institutions/', body);
     return response.data;
   },
 };
@@ -174,6 +208,16 @@ export const appointmentsApi = {
 
   cancel: async (id: string): Promise<void> => {
     await api.delete(`/appointments/${id}`);
+  },
+
+  getAvailability: async (
+    counsellorId: string,
+    date: string
+  ): Promise<{ date: string; counsellor_id: string; available_slots: { start: string; end: string }[] }> => {
+    const response = await api.get('/appointments/availability', {
+      params: { counsellor_id: counsellorId, date },
+    });
+    return response.data;
   },
 };
 

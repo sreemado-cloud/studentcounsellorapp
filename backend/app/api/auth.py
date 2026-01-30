@@ -8,15 +8,17 @@ from datetime import datetime, timedelta
 from bson import ObjectId
 import traceback
 
-from app.core.database import get_database
+from app.core.database import get_database, get_default_database
 from app.core.security import (
-    get_password_hash, 
-    verify_password, 
+    get_password_hash,
+    verify_password,
     create_access_token,
-    get_current_active_user
+    get_current_active_user,
+    oauth2_scheme,
 )
 from app.core.audit import AuditLogger, AuditAction
 from app.core.tenant import is_email_super_admin
+from app.core.validators import validate_object_id
 from app.core.rate_limit import (
     limiter,
     LOGIN_RATE_LIMIT,
@@ -24,11 +26,15 @@ from app.core.rate_limit import (
     FORGOT_PASSWORD_RATE_LIMIT,
     RESET_PASSWORD_RATE_LIMIT
 )
+from app.core.token_revocation import add_session, delete_session, delete_sessions_for_user
 from app.models.user import (
     UserCreate, UserResponse, Token, UserLogin, PasswordResetRequest,
     ForgotPasswordRequest, ResetPasswordWithTokenRequest
 )
 from app.core.email import send_password_reset_email, send_student_registration_notification
+from app.core.config import settings
+from jose import JWTError, jwt
+import re
 import secrets
 
 router = APIRouter(prefix="/api/auth", tags=["Authentication"])
@@ -46,16 +52,11 @@ async def register(user_data: UserCreate, request: Request):
     database = await get_database()
     
     # Verify institution exists
-    try:
-        institution = await database.institutions.find_one({
-            "_id": ObjectId(user_data.institution_id),
-            "is_active": True
-        })
-    except:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid institution ID"
-        )
+    oid = validate_object_id(user_data.institution_id, "institution_id")
+    institution = await database.institutions.find_one({
+        "_id": oid,
+        "is_active": True
+    })
     
     if not institution:
         raise HTTPException(
@@ -156,7 +157,8 @@ async def register(user_data: UserCreate, request: Request):
         }
     
     # For non-students (counsellors/admins created by admins), create token
-    access_token = create_access_token(data={"sub": user_dict["id"]})
+    access_token, jti, exp = create_access_token(data={"sub": user_dict["id"]})
+    await add_session(jti, user_dict["id"], exp)
     
     # Remove password from response
     del user_dict["password"]
@@ -175,7 +177,8 @@ async def register(user_data: UserCreate, request: Request):
 
 
 @router.post("/login", response_model=Token)
-async def login(form_data: OAuth2PasswordRequestForm = Depends(), request: Request = None):
+@limiter.limit(LOGIN_RATE_LIMIT)
+async def login(request: Request, form_data: OAuth2PasswordRequestForm = Depends()):
     """
     Login with email and password.
     
@@ -186,12 +189,18 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends(), request: Reque
     logger = logging.getLogger(__name__)
     
     try:
-        logger.info(f"Login attempt for email: {form_data.username}")
-        database = await get_database()
-        
-        user = await database.users.find_one({"email": form_data.username})
+        email_input = (form_data.username or "").strip()
+        logger.info(f"Login attempt for email: {email_input}")
+        if not email_input:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Email is required",
+            )
+        default_db = get_default_database()
+        pattern = "^" + re.escape(email_input) + "$"
+        user = await default_db.users.find_one({"email": {"$regex": pattern, "$options": "i"}})
         if not user or not verify_password(form_data.password, user["password"]):
-            logger.warning(f"Login failed: Invalid credentials for {form_data.username}")
+            logger.warning(f"Login failed: Invalid credentials for {email_input}")
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Incorrect email or password",
@@ -199,26 +208,26 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends(), request: Reque
             )
         
         if not user.get("is_active", True):
-            logger.warning(f"Login failed: Inactive account for {form_data.username}")
+            logger.warning(f"Login failed: Inactive account for {email_input}")
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Account is inactive"
             )
         
-        # Get institution name
         institution_name = None
         institution_id = user.get("institution_id")
         if institution_id:
             try:
-                institution = await database.institutions.find_one({"_id": ObjectId(institution_id)})
+                institution = await default_db.institutions.find_one({"_id": ObjectId(str(institution_id))})
                 if institution:
                     institution_name = institution["name"]
             except Exception as e:
                 logger.warning(f"Could not fetch institution name: {e}")
         
-        # Create access token
-        access_token = create_access_token(data={"sub": str(user["_id"])})
-        
+        # Create access token and record session for revocation
+        access_token, jti, exp = create_access_token(data={"sub": str(user["_id"])})
+        await add_session(jti, str(user["_id"]), exp)
+
         # Audit log the login (fire-and-forget - log_action uses create_task internally)
         if institution_id:
             try:
@@ -236,6 +245,18 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends(), request: Reque
         
         password_reset_required = user.get("password_reset_required", False)
         super_admin = is_email_super_admin(user.get("email", "") or "")
+
+        # Resolve assigned counsellor for students
+        assigned_counsellor_id = user.get("assigned_counsellor_id")
+        assigned_counsellor_name = None
+        if assigned_counsellor_id:
+            assigned_counsellor_id = str(assigned_counsellor_id)
+            try:
+                counsellor = await default_db.users.find_one({"_id": ObjectId(assigned_counsellor_id)})
+                if counsellor:
+                    assigned_counsellor_name = counsellor.get("full_name")
+            except Exception:
+                pass
         
         user_response = UserResponse(
             id=str(user["_id"]),
@@ -244,6 +265,8 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends(), request: Reque
             role=user["role"],
             institution_id=institution_id or "default",
             institution_name=institution_name,
+            assigned_counsellor_id=assigned_counsellor_id,
+            assigned_counsellor_name=assigned_counsellor_name,
             phone=user.get("phone"),
             grade=user.get("grade"),
             major=user.get("major"),
@@ -265,31 +288,45 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends(), request: Reque
         # Re-raise HTTP exceptions (these are expected)
         raise
     except Exception as e:
-        # Log unexpected errors
+        # Log unexpected errors and return the real message so UI/logs can show it
         logger.error(f"Unexpected error during login: {str(e)}", exc_info=True)
+        detail = str(e) if settings.DEBUG else "An error occurred during login. Please try again."
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="An error occurred during login. Please try again."
+            detail=detail,
         )
 
 
 @router.get("/me", response_model=UserResponse)
 async def get_current_user_info(current_user: dict = Depends(get_current_active_user)):
     """Get current logged-in user information"""
-    database = await get_database()
-    
-    # Get institution name
+    default_db = get_default_database()
+    # Use shared DB for both user and institution so we never mix tenant DB (can have wrong/stale data)
+    user_for_inst = await default_db.users.find_one({"_id": ObjectId(current_user["id"])})
+    institution_id = (user_for_inst or current_user).get("institution_id")
     institution_name = None
-    institution_id = current_user.get("institution_id")
     if institution_id:
         try:
-            institution = await database.institutions.find_one({"_id": ObjectId(institution_id)})
+            institution = await default_db.institutions.find_one({"_id": ObjectId(str(institution_id))})
             if institution:
-                institution_name = institution["name"]
-        except:
+                institution_name = institution.get("name")
+        except Exception:
             pass
     
     super_admin = is_email_super_admin(current_user.get("email", "") or "")
+
+    # Resolve assigned counsellor for students
+    assigned_counsellor_id = (user_for_inst or current_user).get("assigned_counsellor_id")
+    assigned_counsellor_name = None
+    if assigned_counsellor_id:
+        assigned_counsellor_id = str(assigned_counsellor_id)
+        try:
+            counsellor = await default_db.users.find_one({"_id": ObjectId(assigned_counsellor_id)})
+            if counsellor:
+                assigned_counsellor_name = counsellor.get("full_name")
+        except Exception:
+            pass
+
     return UserResponse(
         id=current_user["id"],
         email=current_user["email"],
@@ -297,6 +334,8 @@ async def get_current_user_info(current_user: dict = Depends(get_current_active_
         role=current_user["role"],
         institution_id=institution_id or "default",
         institution_name=institution_name,
+        assigned_counsellor_id=assigned_counsellor_id,
+        assigned_counsellor_name=assigned_counsellor_name,
         phone=current_user.get("phone"),
         grade=current_user.get("grade"),
         major=current_user.get("major"),
@@ -309,13 +348,47 @@ async def get_current_user_info(current_user: dict = Depends(get_current_active_
     )
 
 
+@router.get("/debug-institution")
+async def debug_institution(current_user: dict = Depends(get_current_active_user)):
+    """[DEBUG] Return institution_id and resolved institution_name for current user. 404 when DEBUG=false."""
+    if not settings.DEBUG:
+        raise HTTPException(status_code=404, detail="Not found")
+    default_db = get_default_database()
+    user = await default_db.users.find_one({"_id": ObjectId(current_user["id"])})
+    institution_id = (user or current_user).get("institution_id")
+    institution_name = None
+    if institution_id:
+        try:
+            inst = await default_db.institutions.find_one({"_id": ObjectId(str(institution_id))})
+            if inst:
+                institution_name = inst.get("name")
+        except Exception:
+            pass
+    return {
+        "email": current_user.get("email"),
+        "institution_id": institution_id,
+        "institution_name": institution_name,
+    }
+
+
 @router.post("/logout")
-async def logout(current_user: dict = Depends(get_current_active_user), request: Request = None):
+async def logout(
+    request: Request,
+    token: str = Depends(oauth2_scheme),
+    current_user: dict = Depends(get_current_active_user),
+):
     """
-    Logout the current user.
-    Note: JWT tokens are stateless, so this just logs the action.
+    Logout the current user. Revokes the current token (C3).
     Client should discard the token.
     """
+    try:
+        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+        jti = payload.get("jti")
+        if jti:
+            await delete_session(jti)
+    except (JWTError, Exception):
+        pass
+
     institution_id = current_user.get("institution_id")
     if institution_id:
         await AuditLogger.log_action(
@@ -325,7 +398,7 @@ async def logout(current_user: dict = Depends(get_current_active_user), request:
             resource_type="session",
             request=request
         )
-    
+
     return {"message": "Logged out successfully"}
 
 
@@ -361,7 +434,9 @@ async def reset_password(
         }
     )
     
-    # Audit log the password reset
+    # Revoke all tokens for this user (C3)
+    await delete_sessions_for_user(current_user["id"])
+
     institution_id = current_user.get("institution_id")
     if institution_id:
         await AuditLogger.log_action(
@@ -373,13 +448,12 @@ async def reset_password(
             request=request,
             metadata={"action": "password_reset"}
         )
-    
+
     return {"message": "Password reset successfully"}
 
 
 @router.post("/forgot-password")
-# Temporarily disabled rate limiter for debugging - re-enable after fixing
-# @limiter.limit(FORGOT_PASSWORD_RATE_LIMIT)
+@limiter.limit(FORGOT_PASSWORD_RATE_LIMIT)
 async def forgot_password(
     request_data: ForgotPasswordRequest,
     request: Request
@@ -569,13 +643,13 @@ async def reset_password_with_token(
         }
     )
     
-    # Mark token as used
     await database.password_reset_tokens.update_one(
         {"_id": reset_token_doc["_id"]},
         {"$set": {"used": True, "used_at": datetime.utcnow()}}
     )
-    
-    # Audit log
+
+    await delete_sessions_for_user(str(user["_id"]))
+
     institution_id = user.get("institution_id")
     if institution_id:
         await AuditLogger.log_action(

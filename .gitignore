@@ -77,6 +77,7 @@ k8s/*-deploy.yaml
 
 # Deployment scripts output
 *.ps1.log
+ssh-push-wrapper.bat
 
 # OS
 Thumbs.db

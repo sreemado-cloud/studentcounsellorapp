@@ -111,7 +111,7 @@ export default function Dashboard() {
               <Calendar className="w-7 h-7 text-indigo-600" />
             </div>
             <div>
-              <p className="text-slate-500 text-sm">Upcoming Sessions</p>
+              <p className="text-slate-500 text-sm">Upcoming Appointments</p>
               <p className="text-2xl font-bold text-slate-800">{upcomingAppointments.length}</p>
             </div>
           </div>
@@ -135,7 +135,7 @@ export default function Dashboard() {
               <TrendingUp className="w-7 h-7 text-green-600" />
             </div>
             <div>
-              <p className="text-slate-500 text-sm">Total Sessions</p>
+              <p className="text-slate-500 text-sm">Total Appointments</p>
               <p className="text-2xl font-bold text-slate-800">{appointments.length}</p>
             </div>
           </div>
@@ -165,7 +165,7 @@ export default function Dashboard() {
                   to="/appointments"
                   className="mt-4 inline-flex items-center gap-2 text-indigo-600 font-medium"
                 >
-                  Book a session <ArrowRight className="w-4 h-4" />
+                  Book an appointment <ArrowRight className="w-4 h-4" />
                 </Link>
               </div>
             ) : (

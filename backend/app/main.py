@@ -1,9 +1,11 @@
+import asyncio
+import traceback
+import logging
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, Request, HTTPException, status, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from contextlib import asynccontextmanager
-import traceback
-import logging
 
 from app.core.config import settings
 from app.core.database import connect_to_mongo, close_mongo_connection
@@ -24,10 +26,16 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup
-    await connect_to_mongo()
-    await create_audit_indexes()
-    # Debug: verify set-password route is in OpenAPI
+    # Startup: init DB in background so /health is up immediately; API waits for DB ready
+    async def init_db():
+        try:
+            await connect_to_mongo()
+            await create_audit_indexes()
+        except Exception as e:
+            logger.error("DB init failed: %s", e, exc_info=True)
+
+    asyncio.create_task(init_db())
+
     try:
         openapi = app.openapi()
         paths = openapi.get("paths", {})
@@ -38,6 +46,7 @@ async def lifespan(app: FastAPI):
             logger.warning("set-password route NOT in OpenAPI. Sample paths: %s", list(paths.keys())[:15])
     except Exception as e:
         logger.warning("Could not check OpenAPI for set-password: %s", e)
+
     yield
     # Shutdown
     await close_mongo_connection()
@@ -53,21 +62,24 @@ app = FastAPI(
 # Initialize rate limiting
 app = get_rate_limit_handler(app)
 
-# CORS middleware for React frontend
-# Use environment variable for production origins
-allowed_origins = []
+# CORS middleware for React frontend (C5: no * in production)
+allowed_origins: list[str] = []
 if settings.ALLOWED_ORIGINS:
     origins_str = settings.ALLOWED_ORIGINS.strip()
     if origins_str == "*":
-        # Allow all origins (use with caution in production)
-        allowed_origins = ["*"]
+        if settings.DEBUG:
+            allowed_origins = ["*"]
+        else:
+            logger.warning(
+                "ALLOWED_ORIGINS=* is disabled in production. Set explicit origins (e.g. https://your-app.example.com)."
+            )
+            allowed_origins = []
     else:
-        allowed_origins = [origin.strip() for origin in origins_str.split(",") if origin.strip()]
+        allowed_origins = [o.strip() for o in origins_str.split(",") if o.strip()]
 else:
-    # Default to localhost for development
     allowed_origins = [
         "http://localhost:3000",
-        "http://localhost:5173",  # Vite default
+        "http://localhost:5173",
         "http://127.0.0.1:3000",
         "http://127.0.0.1:5173",
     ]

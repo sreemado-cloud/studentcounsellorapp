@@ -30,7 +30,7 @@ export default function Students() {
 
   const fetchStudents = async () => {
     try {
-      const data = await institutionsApi.getUsers('student');
+      const data = await institutionsApi.getAssignedStudents();
       setStudents(data);
     } catch (error) {
       console.error('Failed to fetch students:', error);
@@ -171,7 +171,7 @@ export default function Students() {
                   className="flex-1 flex items-center justify-center gap-2 px-4 py-2 bg-slate-100 text-slate-700 rounded-lg hover:bg-slate-200 transition-colors text-sm font-medium"
                 >
                   <Calendar className="w-4 h-4" />
-                  Sessions
+                  Appointments
                 </button>
               </div>
             </div>

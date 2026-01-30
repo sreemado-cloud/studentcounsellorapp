@@ -1,45 +1,47 @@
-# PowerShell script to start the Student Counsellor App with Docker
+# Start the Student Counsellor App (MongoDB + Backend + Frontend)
+# Run from project root: .\start-docker.ps1
 
-Write-Host "========================================" -ForegroundColor Cyan
-Write-Host "Student Counsellor App - Docker Start" -ForegroundColor Cyan
-Write-Host "========================================" -ForegroundColor Cyan
-Write-Host ""
+$ErrorActionPreference = "Continue"
+Write-Host "`n========================================" -ForegroundColor Cyan
+Write-Host "  Student Counsellor App - Docker Start" -ForegroundColor Cyan
+Write-Host "========================================`n" -ForegroundColor Cyan
 
-# Check if Docker is running
-Write-Host "Checking Docker status..." -ForegroundColor Yellow
-try {
-    $dockerStatus = docker ps 2>&1
-    if ($LASTEXITCODE -ne 0) {
-        Write-Host ""
-        Write-Host "❌ Docker Desktop is not running!" -ForegroundColor Red
-        Write-Host ""
-        Write-Host "Please:" -ForegroundColor Yellow
-        Write-Host "1. Start Docker Desktop from the Start menu" -ForegroundColor White
-        Write-Host "2. Wait until Docker Desktop is fully running (tray icon stops animating)" -ForegroundColor White
-        Write-Host "3. Run this script again" -ForegroundColor White
-        Write-Host ""
-        Write-Host "Press any key to exit..."
-        $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
-        exit 1
-    }
-    Write-Host "✅ Docker is running" -ForegroundColor Green
-} catch {
-    Write-Host "❌ Docker is not running or not installed" -ForegroundColor Red
-    Write-Host "Please start Docker Desktop first" -ForegroundColor Yellow
+# Docker check
+Write-Host "Checking Docker..." -ForegroundColor Yellow
+$dr = docker info 2>&1
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "Docker is not running. Start Docker Desktop, then run this script again.`n" -ForegroundColor Red
     exit 1
 }
+Write-Host "Docker OK`n" -ForegroundColor Green
 
-Write-Host ""
-Write-Host "Starting Docker Compose services..." -ForegroundColor Yellow
-Write-Host ""
-
-# Change to project directory
 Set-Location $PSScriptRoot
 
-# Start Docker Compose (keep this window open!)
-$null = docker compose version 2>&1
-if ($LASTEXITCODE -eq 0) {
-    docker compose up
-} else {
-    docker-compose up
+# Stop any existing, then bring up with build
+Write-Host "Stopping existing containers..." -ForegroundColor Yellow
+docker compose down 2>$null | Out-Null
+
+Write-Host "Starting MongoDB, Backend, Frontend (build if needed)..." -ForegroundColor Yellow
+docker compose up -d --build
+
+Write-Host "`nWaiting 50 seconds for services to start..." -ForegroundColor Yellow
+Start-Sleep -Seconds 50
+
+# Status
+Write-Host "`nContainer status:" -ForegroundColor Yellow
+docker compose ps -a
+
+Write-Host "`n----------------------------------------" -ForegroundColor DarkGray
+Write-Host "Open in your browser: " -NoNewline
+Write-Host "http://localhost:3000" -ForegroundColor Cyan
+Write-Host "----------------------------------------`n" -ForegroundColor DarkGray
+
+# Quick check
+$front = docker compose ps frontend --format "{{.Status}}" 2>$null
+$back = docker compose ps backend --format "{{.Status}}" 2>$null
+if ($front -notmatch "Up|running" -or $back -notmatch "Up|running") {
+    Write-Host "Some services may not be running. Check logs:" -ForegroundColor Yellow
+    Write-Host "  docker compose logs backend" -ForegroundColor White
+    Write-Host "  docker compose logs frontend" -ForegroundColor White
+    Write-Host "  docker compose logs mongodb`n" -ForegroundColor White
 }

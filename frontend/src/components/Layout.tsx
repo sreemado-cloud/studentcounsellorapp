@@ -39,6 +39,7 @@ const navItems: NavItem[] = [
   { path: '/messages', icon: MessageSquare, label: 'Messages', roles: ['student', 'counsellor', 'admin'] },
   { path: '/notes', icon: FileText, label: 'My Notes', roles: ['student'] },
   { path: '/admin', icon: Settings, label: 'Admin Panel', roles: ['admin'] },
+  { path: '/institutions', icon: Building2, label: 'Institutions', roles: ['admin'] },
   { path: '/super-admin', icon: Shield, label: 'Super Admin', roles: ['admin'], superAdminOnly: true },
   { path: '/profile', icon: User, label: 'Profile', roles: ['student', 'counsellor', 'admin'] },
 ];

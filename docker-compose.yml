@@ -1,12 +1,13 @@
 services:
-  # MongoDB Database
+  # MongoDB Database (C6: secrets from root .env via env.example)
   mongodb:
     image: mongo:7.0
     container_name: student-counsellor-mongodb
     restart: unless-stopped
     environment:
-      MONGO_INITDB_ROOT_USERNAME: admin
-      MONGO_INITDB_ROOT_PASSWORD: password123
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_INITDB_ROOT_USERNAME:-admin}
+      # Use empty string if unset (for existing DB created with no password). Set in .env for new installs.
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_INITDB_ROOT_PASSWORD:-}
       MONGO_INITDB_DATABASE: student_counsellor
     volumes:
       - mongodb_data:/data/db
@@ -14,13 +15,10 @@ services:
       - "27017:27017"
     networks:
       - app-network
-    healthcheck:
-      test: echo 'db.runCommand("ping").ok' | mongosh localhost:27017/test --quiet
-      interval: 10s
-      timeout: 5s
-      retries: 5
+    # No healthcheck: backend uses service_started + connection retries to avoid "unhealthy" blocking the stack
 
   # Backend API
+  # C6: Secrets only from backend/.env. Do not override SECRET_KEY or MONGODB_URL here.
   backend:
     build:
       context: ./backend
@@ -30,15 +28,14 @@ services:
     env_file:
       - ./backend/.env
     environment:
-      - MONGODB_URL=mongodb://admin:password123@mongodb:27017
+      - MONGODB_URL=mongodb://${MONGO_INITDB_ROOT_USERNAME:-admin}:${MONGO_INITDB_ROOT_PASSWORD}@mongodb:27017
       - DATABASE_NAME=student_counsellor
-      - SECRET_KEY=your-super-secret-key-change-in-production
-      - ACCESS_TOKEN_EXPIRE_MINUTES=30
+    # SECRET_KEY, ACCESS_TOKEN_* etc. come from .env only
     ports:
       - "8000:8000"
     depends_on:
       mongodb:
-        condition: service_healthy
+        condition: service_started
     networks:
       - app-network
     healthcheck:

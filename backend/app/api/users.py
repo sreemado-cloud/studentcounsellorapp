@@ -6,8 +6,9 @@ from fastapi import APIRouter, HTTPException, status, Depends, Request
 from typing import List
 from bson import ObjectId
 
-from app.core.database import get_database
+from app.core.database import get_database, get_default_database
 from app.core.tenant import get_tenant_dependency, TenantContext
+from app.core.validators import validate_object_id
 from app.core.audit import AuditLogger, AuditAction
 from app.models.user import UserResponse, UserUpdate, UserRole
 
@@ -86,16 +87,17 @@ async def update_profile(
     # Fetch updated user
     updated_user = await database.users.find_one({"_id": ObjectId(tenant.user_id)})
     
-    # Get institution name
+    # Get institution name from shared DB (institutions are global)
     institution_name = None
     if updated_user.get("institution_id"):
         try:
-            institution = await database.institutions.find_one({
-                "_id": ObjectId(updated_user["institution_id"])
+            default_db = get_default_database()
+            institution = await default_db.institutions.find_one({
+                "_id": ObjectId(str(updated_user["institution_id"]))
             })
             if institution:
                 institution_name = institution["name"]
-        except:
+        except Exception:
             pass
     
     # Audit log
@@ -139,27 +141,26 @@ async def get_user(
     """
     database = await get_database()
     
-    try:
-        user = await database.users.find_one({
-            "_id": ObjectId(user_id),
-            "institution_id": tenant.institution_id  # Same institution only
-        })
-    except:
-        raise HTTPException(status_code=404, detail="User not found")
+    uid = validate_object_id(user_id, "user_id")
+    user = await database.users.find_one({
+        "_id": uid,
+        "institution_id": tenant.institution_id
+    })
     
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     
-    # Get institution name
+    # Get institution name from shared DB (institutions are global)
     institution_name = None
     if user.get("institution_id"):
         try:
-            institution = await database.institutions.find_one({
-                "_id": ObjectId(user["institution_id"])
+            default_db = get_default_database()
+            institution = await default_db.institutions.find_one({
+                "_id": ObjectId(str(user["institution_id"]))
             })
             if institution:
                 institution_name = institution["name"]
-        except:
+        except Exception:
             pass
     
     # Audit log

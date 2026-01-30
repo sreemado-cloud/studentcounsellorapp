@@ -134,20 +134,18 @@ class TenantMiddleware(BaseHTTPMiddleware):
                 user_id = payload.get("sub")
                 
                 if user_id:
-                    # Fetch user details for tenant context
-                    from app.core.database import get_database
+                    from app.core.database import get_default_database
                     from bson import ObjectId
-                    
-                    database = await get_database()
-                    user = await database.users.find_one({"_id": ObjectId(user_id)})
+                    default_db = get_default_database()
+                    user = await default_db.users.find_one({"_id": ObjectId(user_id)})
                     
                     if user and user.get("is_active", True):
-                        # Get institution_id - required for multi-tenancy
+                        # Get institution_id - required for multi-tenancy (normalize to string)
                         institution_id = user.get("institution_id")
-                        
-                        if not institution_id:
+                        if institution_id is not None:
+                            institution_id = str(institution_id)
+                        if not institution_id or institution_id == "default":
                             # User without institution - likely legacy data
-                            # For backwards compatibility, use a default
                             institution_id = "default"
                         
                         # Set tenant context for this request
@@ -205,6 +203,19 @@ def require_role(*allowed_roles: str):
 def require_institution_admin():
     """Dependency to require institution admin role"""
     return require_role("admin")
+
+
+def require_super_admin():
+    """Dependency to require super admin (platform-wide access)."""
+    def dependency() -> TenantContext:
+        ctx = get_required_tenant_context()
+        if ctx.role != "admin" or not is_super_admin(ctx):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Super admin access required",
+            )
+        return ctx
+    return dependency
 
 
 def require_counsellor_or_admin():

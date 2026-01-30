@@ -8,7 +8,7 @@ interface AuthContextType {
   token: string | null;
   isLoading: boolean;
   passwordResetRequired: boolean;
-  login: (email: string, password: string) => Promise<boolean>;
+  login: (email: string, password: string) => Promise<{ resetRequired: boolean; isSuperAdmin: boolean }>;
   register: (email: string, password: string, fullName: string, institutionId: string) => Promise<boolean>;
   logout: () => void;
   resetPassword: (currentPassword: string, newPassword: string) => Promise<void>;
@@ -54,7 +54,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
-  const login = async (email: string, password: string): Promise<boolean> => {
+  const login = async (email: string, password: string): Promise<{ resetRequired: boolean; isSuperAdmin: boolean }> => {
     const response = await authApi.login(email, password);
     const t = response.access_token ?? null;
     const u = response.user ?? null;
@@ -64,7 +64,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setPasswordResetRequired(resetRequired);
     if (t) localStorage.setItem('token', t);
     if (u) localStorage.setItem('user', JSON.stringify(u));
-    return resetRequired;
+    return { resetRequired, isSuperAdmin: u?.is_super_admin ?? false };
   };
 
   const register = async (email: string, password: string, fullName: string, institutionId: string): Promise<boolean> => {
